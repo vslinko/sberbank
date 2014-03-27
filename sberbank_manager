@@ -1,0 +1,147 @@
+#!/bin/bash
+
+
+_sberbank_help_message() {
+  cat << END
+Usage: ./sberbank COMMAND
+
+Available commands:
+  up        Start development server
+  mount     Mount sources from development server
+  umount    Umount sources
+  down      Stop development server
+  deploy    Deploy project to digitalocean
+  cleanup   Remove all generated files
+END
+}
+
+
+_sberbank_check_ssh_key() {
+  if [ -f data_bags/nodejs_project/settings.json ]; then
+    return
+  fi
+
+  ssh-keygen -f .id_deploy -N "" -C "generated development server key"
+  mkdir -p data_bags/nodejs_project
+  echo '{"id":"settings","deploy_key":"'"$(perl -pe 's/\n/\\n/' .id_deploy)"'"}' > data_bags/nodejs_project/settings.json
+  curl -u vslinko -d '{"title":"generated development server key","key":"'"$(cat .id_deploy.pub)"'"}' "https://api.github.com/repos/rithis/sberbank-frontend/keys"
+  rm .id_deploy .id_deploy.pub
+}
+
+
+_sberbank_check_cookbooks() {
+  if [ -d cookbooks ]; then
+    return
+  fi
+
+  berks install --path=cookbooks
+}
+
+
+_sberbank_check_box() {
+  if [ -f packer_virtualbox-iso_virtualbox.box ]; then
+    return
+  fi
+
+  packer build --only=virtualbox-iso packer.json
+}
+
+
+_sberbank_check_digitalocean_credentials() {
+  if [ -f .digitalocean_credentials ]; then
+    return
+  fi
+
+  read -p "Enter digitalocean client id: " client_id
+  read -p "Enter digitalocean api key: " api_key
+
+  cat << END > .digitalocean_credentials
+DIGITALOCEAN_CLIENT_ID=$client_id
+DIGITALOCEAN_API_KEY=$api_key
+END
+}
+
+
+_sberbank_up() {
+  _sberbank_check_ssh_key
+  _sberbank_check_cookbooks
+  _sberbank_check_box
+
+  vagrant up
+}
+
+_sberbank_mount() {
+  if [ ! -d sources ]; then
+    mkdir -p sources
+    mount -t nfs "10.10.10.10:/home/vagrant/sberbank/project" sources
+  fi
+}
+
+
+_sberbank_umount() {
+  if [ -d sources ]; then
+    umount sources
+    rm -rf sources
+  fi
+}
+
+
+_sberbank_down() {
+  _sberbank_umount
+  vagrant halt
+}
+
+
+_sberbank_deploy() {
+  _sberbank_check_ssh_key
+  _sberbank_check_cookbooks
+  _sberbank_check_digitalocean_credentials
+
+  . .digitalocean_credentials
+
+  DIGITALOCEAN_CLIENT_ID="$DIGITALOCEAN_CLIENT_ID" DIGITALOCEAN_API_KEY="$DIGITALOCEAN_API_KEY" packer build -only=digitalocean packer.json
+}
+
+
+_sberbank_cleanup() {
+  vagrant destroy
+
+  rm -rf .vagrant cookbooks data_bags/nodejs_project/settings.json output-virtualbox-iso packer_cache .digitalocean_credentials .id_deploy .id_deploy.pub Berksfile.lock packer_virtualbox-iso_virtualbox.box
+
+  if [ "x$(ls data_bags/nodejs_project)" == "x" ]; then
+    rm -r data_bags/nodejs_project
+  fi
+
+  if [ "x$(ls data_bags)" == "x" ]; then
+    rm -r data_bags
+  fi
+}
+
+
+_sberbank_main() {
+  cd "$(dirname $0)"
+
+  command="$1"
+
+  if [ "x$command" == "x" ]; then
+    _sberbank_help_message
+  elif [ "x$command" == "xup" ]; then
+    _sberbank_up
+  elif [ "x$command" == "xmount" ]; then
+    _sberbank_mount
+  elif [ "x$command" == "xumount" ]; then
+    _sberbank_umount
+  elif [ "x$command" == "xdown" ]; then
+    _sberbank_down
+  elif [ "x$command" == "xdeploy" ]; then
+    _sberbank_deploy
+  elif [ "x$command" == "xcleanup" ]; then
+    _sberbank_cleanup
+  else
+    _sberbank_help_message
+    exit 1
+  fi
+}
+
+
+_sberbank_main $*
